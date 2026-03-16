@@ -1,0 +1,190 @@
+﻿@page
+@using System
+@using System.Linq
+@model bpasite.Pages.IndexModel
+
+@{
+    ViewData["Title"] = "SQL Best Practices Assessment";
+
+    string ActiveSeverity(string s) =>
+        Model.SelectedSeverity.Equals(s, StringComparison.OrdinalIgnoreCase)
+            ? "font-weight:bold; text-decoration:underline;"
+            : "";
+
+    // ✅ Server Summary (NO risk score, ordered by severity counts)
+    var serverSummary =
+        Model.Recommendations
+            .GroupBy(r => r.ServerName)
+            .Select(g => new
+            {
+                Server = g.Key,
+                High = g.Count(r => r.Severity == "High"),
+                Medium = g.Count(r => r.Severity == "Medium"),
+                Low = g.Count(r => r.Severity == "Low"),
+                Info = g.Count(r => r.Severity == "Information")
+            })
+            .OrderByDescending(s => s.High)
+            .ThenByDescending(s => s.Medium)
+            .ThenBy(s => s.Server)
+            .ToList();
+}
+
+<h1>SQL Best Practices Assessment</h1>
+
+<p><b>Status:</b> @Model.Status</p>
+
+@if (!string.IsNullOrWhiteSpace(Model.Error))
+{
+    <h3>Error</h3>
+    <pre>@Model.Error</pre>
+}
+else if (Model.Recommendations == null || Model.Recommendations.Count == 0)
+{
+    <p>No BPA recommendations were returned.</p>
+}
+else
+{
+    <p><b>Total findings:</b> @Model.Recommendations.Count</p>
+
+    <!-- Severity filter -->
+    <div style="margin-bottom:10px;">
+        <b>Severity:</b>
+        <a asp-page="./Index" asp-route-severity="All" asp-route-server="@Model.SelectedServer" style="@ActiveSeverity("All")">All</a> |
+        <a asp-page="./Index" asp-route-severity="High" asp-route-server="@Model.SelectedServer" style="@ActiveSeverity("High")">🔴 High</a> |
+        <a asp-page="./Index" asp-route-severity="Medium" asp-route-server="@Model.SelectedServer" style="@ActiveSeverity("Medium")">🟡 Medium</a> |
+        <a asp-page="./Index" asp-route-severity="Low" asp-route-server="@Model.SelectedServer" style="@ActiveSeverity("Low")">🔵 Low</a> |
+        <a asp-page="./Index" asp-route-severity="Information" asp-route-server="@Model.SelectedServer" style="@ActiveSeverity("Information")">🟢 Info</a>
+    </div>
+
+    <!-- Server filter -->
+    <form method="get" style="margin-bottom:10px;">
+        <b>Server:</b>
+        <select name="server" onchange="this.form.submit()">
+            @if (Model.SelectedServer.Equals("All", StringComparison.OrdinalIgnoreCase))
+            {
+                <option value="All" selected="selected">All</option>
+            }
+            else
+            {
+                <option value="All">All</option>
+            }
+
+            @foreach (var s in Model.Servers ?? Enumerable.Empty<string>())
+            {
+                if (s.Equals(Model.SelectedServer, StringComparison.OrdinalIgnoreCase))
+                {
+                    <option value="@s" selected="selected">@s</option>
+                }
+                else
+                {
+                    <option value="@s">@s</option>
+                }
+            }
+        </select>
+
+        <input type="hidden" name="severity" value="@Model.SelectedSeverity" />
+    </form>
+
+    <!-- CSV Export -->
+    <p style="margin-bottom:10px;">
+        <a asp-page="./Index"
+           asp-page-handler="DownloadCsv"
+           asp-route-severity="@Model.SelectedSeverity"
+           asp-route-server="@Model.SelectedServer">
+            ⬇ Download CSV
+        </a>
+    </p>
+
+    <!-- ✅ SERVER SUMMARY -->
+    <h3>Server Summary</h3>
+
+    <table border="1" cellpadding="6" cellspacing="0" style="margin-bottom:16px;">
+        <thead>
+            <tr>
+                <th>Server</th>
+                <th>Summary</th>
+            </tr>
+        </thead>
+        <tbody>
+        @foreach (var s in serverSummary)
+        {
+            <tr>
+                <td>
+                    <strong>
+                        <a asp-page="./Index"
+                           asp-route-server="@s.Server"
+                           asp-route-severity="@Model.SelectedSeverity"
+                           style="text-decoration:none;">
+                            @s.Server
+                        </a>
+                    </strong>
+                </td>
+                <td>
+                    @if (s.High > 0)
+                    {
+                        <span style="color:#d9534f;font-weight:bold;">🔴 @s.High High</span>
+                    }
+                    @if (s.Medium > 0)
+                    {
+                        <span style="margin-left:8px;color:#f0ad4e;">🟡 @s.Medium Medium</span>
+                    }
+                    @if (s.Low > 0)
+                    {
+                        <span style="margin-left:8px;color:#5bc0de;">🔵 @s.Low Low</span>
+                    }
+                    @if (s.Info > 0)
+                    {
+                        <span style="margin-left:8px;color:#5cb85c;">🟢 @s.Info Info</span>
+                    }
+                </td>
+            </tr>
+        }
+        </tbody>
+    </table>
+
+    <!-- Detail table -->
+    <table border="1" cellpadding="6" cellspacing="0">
+        <thead>
+            <tr>
+                <th>Time</th>
+                <th>Server</th>
+                <th>Severity</th>
+                <th>Rule</th>
+                <th>Recommendation</th>
+            </tr>
+        </thead>
+        <tbody>
+        @foreach (var r in Model.Recommendations)
+        {
+            var color = r.Severity switch
+            {
+                "High" => "#d9534f",
+                "Medium" => "#f0ad4e",
+                "Low" => "#5bc0de",
+                "Information" => "#5cb85c",
+                _ => "#999999"
+            };
+
+            <tr>
+                <td>@r.TimeGenerated</td>
+                <td>@r.ServerName</td>
+                <td>
+                    <span style="
+                        background-color:@color;
+                        color:white;
+                        padding:4px 8px;
+                        border-radius:4px;
+                        font-weight:bold;">
+                        @r.Severity
+                    </span>
+                </td>
+                <td>
+                    <strong>@r.RuleName</strong><br />
+                    <small>@r.RuleId</small>
+                </td>
+                <td>@r.Message</td>
+            </tr>
+        }
+        </tbody>
+    </table>
+}
