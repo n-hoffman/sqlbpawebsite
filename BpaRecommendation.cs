@@ -13,6 +13,10 @@ public class BpaRecommendation
 
     public string Severity { get; set; } = "Unknown";
 
+    public string HelpLink { get; set; } = "";
+
+    public string AdditionalDetails { get; set; } = "";
+
     // ✅ NEW: required for UI + CSV + filtering
     public string ServerName { get; set; } = "Unknown";
 }

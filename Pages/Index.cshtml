@@ -11,7 +11,7 @@
             ? "font-weight:bold; text-decoration:underline;"
             : "";
 
-    // ✅ Server Summary (NO risk score, ordered by severity counts)
+    // ✅ Server Summary
     var serverSummary =
         Model.Recommendations
             .GroupBy(r => r.ServerName)
@@ -29,6 +29,85 @@
             .ToList();
 }
 
+<style>
+    /* ✅ Scroll container */
+    .bpa-table-container {
+        max-height: 650px;
+        overflow: auto;
+        border: 1px solid #ddd;
+    }
+
+    /* ✅ Table layout */
+    .bpa-table {
+        table-layout: fixed;
+        width: 100%;
+        border-collapse: collapse;
+    }
+
+    /* ✅ Sticky headers */
+    .bpa-table thead th {
+        position: sticky;
+        top: 0;
+        background-color: #f8f9fa;
+        z-index: 4;
+        text-align: left;
+        box-shadow: 0 2px 2px rgba(0,0,0,0.05);
+        white-space: nowrap;
+    }
+
+    /* ✅ Sticky Server column */
+    .bpa-table th:nth-child(2),
+    .bpa-table td:nth-child(2) {
+        position: sticky;
+        left: 0;
+        background-color: #ffffff;
+        z-index: 3;
+        box-shadow: 2px 0 2px rgba(0,0,0,0.04);
+        white-space: nowrap;
+    }
+
+    .bpa-table thead th:nth-child(2) {
+        z-index: 5;
+    }
+
+    /* ✅ Column sizing — EXACTLY 6 columns */
+    .bpa-table th:nth-child(1),
+    .bpa-table td:nth-child(1) { width: 140px; }  /* Time */
+
+    .bpa-table th:nth-child(2),
+    .bpa-table td:nth-child(2) { width: 120px; }  /* Server */
+
+    .bpa-table th:nth-child(3),
+    .bpa-table td:nth-child(3) { width: 100px; }  /* Severity */
+
+    .bpa-table th:nth-child(4),
+    .bpa-table td:nth-child(4) { width: 220px; }  /* Rule */
+
+    .bpa-table th:nth-child(5),
+    .bpa-table td:nth-child(5) { width: 520px; }  /* ✅ Recommendation */
+
+    .bpa-table th:nth-child(6),
+    .bpa-table td:nth-child(6) { width: 260px; }  /* AdditionalDetails */
+
+    /* ✅ Readability */
+    .bpa-table td {
+        padding: 6px;
+        vertical-align: top;
+        white-space: normal;
+        word-wrap: break-word;
+        line-height: 1.45;
+    }
+
+    .bpa-table td:nth-child(5) {
+        font-size: 0.95em;
+    }
+
+    .bpa-table td:nth-child(6) {
+        font-size: 0.9em;
+        color: #555;
+    }
+</style>
+
 <h1>SQL Best Practices Assessment</h1>
 
 <p><b>Status:</b> @Model.Status</p>
@@ -38,7 +117,7 @@
     <h3>Error</h3>
     <pre>@Model.Error</pre>
 }
-else if (Model.Recommendations == null || Model.Recommendations.Count == 0)
+else if (!Model.Recommendations.Any())
 {
     <p>No BPA recommendations were returned.</p>
 }
@@ -46,7 +125,7 @@ else
 {
     <p><b>Total findings:</b> @Model.Recommendations.Count</p>
 
-    <!-- Severity filter -->
+    <!-- ✅ Severity filter -->
     <div style="margin-bottom:10px;">
         <b>Severity:</b>
         <a asp-page="./Index" asp-route-severity="All" asp-route-server="@Model.SelectedServer" style="@ActiveSeverity("All")">All</a> |
@@ -56,36 +135,20 @@ else
         <a asp-page="./Index" asp-route-severity="Information" asp-route-server="@Model.SelectedServer" style="@ActiveSeverity("Information")">🟢 Info</a>
     </div>
 
-    <!-- Server filter -->
+    <!-- ✅ Server filter -->
     <form method="get" style="margin-bottom:10px;">
         <b>Server:</b>
         <select name="server" onchange="this.form.submit()">
-            @if (Model.SelectedServer.Equals("All", StringComparison.OrdinalIgnoreCase))
-            {
-                <option value="All" selected="selected">All</option>
-            }
-            else
-            {
-                <option value="All">All</option>
-            }
-
+            <option value="All" selected="@(Model.SelectedServer.Equals("All", StringComparison.OrdinalIgnoreCase))">All</option>
             @foreach (var s in Model.Servers ?? Enumerable.Empty<string>())
             {
-                if (s.Equals(Model.SelectedServer, StringComparison.OrdinalIgnoreCase))
-                {
-                    <option value="@s" selected="selected">@s</option>
-                }
-                else
-                {
-                    <option value="@s">@s</option>
-                }
+                <option value="@s" selected="@(s.Equals(Model.SelectedServer, StringComparison.OrdinalIgnoreCase))">@s</option>
             }
         </select>
-
         <input type="hidden" name="severity" value="@Model.SelectedSeverity" />
     </form>
 
-    <!-- CSV Export -->
+    <!-- ✅ CSV Export -->
     <p style="margin-bottom:10px;">
         <a asp-page="./Index"
            asp-page-handler="DownloadCsv"
@@ -95,9 +158,8 @@ else
         </a>
     </p>
 
-    <!-- ✅ SERVER SUMMARY -->
+    <!-- ✅ Server Summary -->
     <h3>Server Summary</h3>
-
     <table border="1" cellpadding="6" cellspacing="0" style="margin-bottom:16px;">
         <thead>
             <tr>
@@ -120,71 +182,73 @@ else
                     </strong>
                 </td>
                 <td>
-                    @if (s.High > 0)
-                    {
-                        <span style="color:#d9534f;font-weight:bold;">🔴 @s.High High</span>
-                    }
-                    @if (s.Medium > 0)
-                    {
-                        <span style="margin-left:8px;color:#f0ad4e;">🟡 @s.Medium Medium</span>
-                    }
-                    @if (s.Low > 0)
-                    {
-                        <span style="margin-left:8px;color:#5bc0de;">🔵 @s.Low Low</span>
-                    }
-                    @if (s.Info > 0)
-                    {
-                        <span style="margin-left:8px;color:#5cb85c;">🟢 @s.Info Info</span>
-                    }
+                    @if (s.High > 0) { <span style="color:#d9534f;font-weight:bold;">🔴 @s.High High</span> }
+                    @if (s.Medium > 0) { <span style="margin-left:8px;color:#f0ad4e;">🟡 @s.Medium Medium</span> }
+                    @if (s.Low > 0) { <span style="margin-left:8px;color:#5bc0de;">🔵 @s.Low Low</span> }
+                    @if (s.Info > 0) { <span style="margin-left:8px;color:#5cb85c;">🟢 @s.Info Info</span> }
                 </td>
             </tr>
         }
         </tbody>
     </table>
 
-    <!-- Detail table -->
-    <table border="1" cellpadding="6" cellspacing="0">
-        <thead>
-            <tr>
-                <th>Time</th>
-                <th>Server</th>
-                <th>Severity</th>
-                <th>Rule</th>
-                <th>Recommendation</th>
-            </tr>
-        </thead>
-        <tbody>
-        @foreach (var r in Model.Recommendations)
-        {
-            var color = r.Severity switch
+    <!-- ✅ Detail table -->
+    <div class="bpa-table-container">
+        <table class="bpa-table" border="1">
+            <thead>
+                <tr>
+                    <th>Time</th>
+                    <th>Server</th>
+                    <th>Severity</th>
+                    <th>Rule</th>
+                    <th>Recommendation</th>
+                    <th>AdditionalDetails</th>
+                </tr>
+            </thead>
+            <tbody>
+            @foreach (var r in Model.Recommendations)
             {
-                "High" => "#d9534f",
-                "Medium" => "#f0ad4e",
-                "Low" => "#5bc0de",
-                "Information" => "#5cb85c",
-                _ => "#999999"
-            };
+                var color = r.Severity switch
+                {
+                    "High" => "#d9534f",
+                    "Medium" => "#f0ad4e",
+                    "Low" => "#5bc0de",
+                    "Information" => "#5cb85c",
+                    _ => "#999999"
+                };
 
-            <tr>
-                <td>@r.TimeGenerated</td>
-                <td>@r.ServerName</td>
-                <td>
-                    <span style="
-                        background-color:@color;
-                        color:white;
-                        padding:4px 8px;
-                        border-radius:4px;
-                        font-weight:bold;">
-                        @r.Severity
-                    </span>
-                </td>
-                <td>
-                    <strong>@r.RuleName</strong><br />
-                    <small>@r.RuleId</small>
-                </td>
-                <td>@r.Message</td>
-            </tr>
-        }
-        </tbody>
-    </table>
+                <tr>
+                    <td>@r.TimeGenerated</td>
+                    <td>@r.ServerName</td>
+                    <td>
+                        <span style="background-color:@color;color:white;padding:4px 8px;border-radius:4px;font-weight:bold;">
+                            @r.Severity
+                        </span>
+                    </td>
+                    <td>
+                        <strong>@r.RuleName</strong><br />
+                        <small>@r.RuleId</small>
+                    </td>
+
+                    <!-- ✅ Recommendation + Help link -->
+                    <td>
+                        @r.Message
+
+                        @if (!string.IsNullOrWhiteSpace(r.HelpLink))
+                        {
+                            <div style="margin-top:6px;">
+                                <a href="@r.HelpLink" target="_blank" rel="noopener noreferrer">
+                                    🔗 Learn more
+                                </a>
+                            </div>
+                        }
+                    </td>
+
+                    <!-- ✅ AdditionalDetails ONLY -->
+                    <td>@r.AdditionalDetails</td>
+                </tr>
+            }
+            </tbody>
+        </table>
+    </div>
 }
