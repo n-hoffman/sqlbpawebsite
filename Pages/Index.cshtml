@@ -1,254 +1,227 @@
 ﻿@page
-@using System
-@using System.Linq
-@model bpasite.Pages.IndexModel
-
 @{
-    ViewData["Title"] = "SQL Best Practices Assessment";
-
-    string ActiveSeverity(string s) =>
-        Model.SelectedSeverity.Equals(s, StringComparison.OrdinalIgnoreCase)
-            ? "font-weight:bold; text-decoration:underline;"
-            : "";
-
-    // ✅ Server Summary
-    var serverSummary =
-        Model.Recommendations
-            .GroupBy(r => r.ServerName)
-            .Select(g => new
-            {
-                Server = g.Key,
-                High = g.Count(r => r.Severity == "High"),
-                Medium = g.Count(r => r.Severity == "Medium"),
-                Low = g.Count(r => r.Severity == "Low"),
-                Info = g.Count(r => r.Severity == "Information")
-            })
-            .OrderByDescending(s => s.High)
-            .ThenByDescending(s => s.Medium)
-            .ThenBy(s => s.Server)
-            .ToList();
+    ViewData["Title"] = "SQL BPA Recommendations";
 }
 
+<h2 class="mb-3">SQL Best Practice Assessment Recommendations</h2>
+
+<div id="loadingIndicator" class="text-muted mb-2">
+    Loading BPA results…
+</div>
+
+<div class="row mb-3">
+    <div class="col-md-4">
+        <label class="form-label">Server</label>
+        <select id="serverFilter" class="form-select">
+            <option value="">All Servers</option>
+        </select>
+    </div>
+
+    <div class="col-md-4">
+        <label class="form-label">Severity</label>
+
+    <select id="severityFilter" class="form-select" multiple size="4">
+        <option value="">All Severities</option>
+        <option value="High">High</option>
+        <option value="Medium">Medium</option>
+        <option value="Low">Low</option>
+    </select>
+
+        <small class="text-muted">Hold Ctrl / Cmd to select multiple</small>
+    </div>
+
+    <div class="col-md-4 d-flex align-items-end">
+        <button class="btn btn-secondary me-2" onclick="exportCsv()">Export CSV</button>
+        <button class="btn btn-outline-secondary" onclick="clearCache()">Clear Cache</button>
+    </div>
+</div>
+
+<div class="table-responsive" style="max-height: 70vh; overflow-y: auto;">
+    <table class="table table-bordered table-striped table-sm" id="bpaTable">
+        <thead class="table-dark sticky-top">
+            <tr>
+                <th>Server</th>
+                <th>Last BPA Run</th>
+                <th>Source</th>
+                <th>Severity</th>
+                <th>Rule ID</th>
+                <th>Title</th>
+                <th>Description</th>
+                <th>AdditionalDetails</th>
+            </tr>
+        </thead>
+        <tbody></tbody>
+    </table>
+</div>
+
 <style>
-    /* ✅ Scroll container */
-    .bpa-table-container {
-        max-height: 650px;
-        overflow: auto;
-        border: 1px solid #ddd;
-    }
-
-    /* ✅ Table layout */
-    .bpa-table {
-        table-layout: fixed;
-        width: 100%;
-        border-collapse: collapse;
-    }
-
-    /* ✅ Sticky headers */
-    .bpa-table thead th {
-        position: sticky;
-        top: 0;
-        background-color: #f8f9fa;
-        z-index: 4;
-        text-align: left;
-        box-shadow: 0 2px 2px rgba(0,0,0,0.05);
-        white-space: nowrap;
-    }
-
-    /* ✅ Sticky Server column */
-    .bpa-table th:nth-child(2),
-    .bpa-table td:nth-child(2) {
-        position: sticky;
-        left: 0;
-        background-color: #ffffff;
-        z-index: 3;
-        box-shadow: 2px 0 2px rgba(0,0,0,0.04);
-        white-space: nowrap;
-    }
-
-    .bpa-table thead th:nth-child(2) {
-        z-index: 5;
-    }
-
-    /* ✅ Column sizing — EXACTLY 6 columns */
-    .bpa-table th:nth-child(1),
-    .bpa-table td:nth-child(1) { width: 140px; }  /* Time */
-
-    .bpa-table th:nth-child(2),
-    .bpa-table td:nth-child(2) { width: 120px; }  /* Server */
-
-    .bpa-table th:nth-child(3),
-    .bpa-table td:nth-child(3) { width: 100px; }  /* Severity */
-
-    .bpa-table th:nth-child(4),
-    .bpa-table td:nth-child(4) { width: 220px; }  /* Rule */
-
-    .bpa-table th:nth-child(5),
-    .bpa-table td:nth-child(5) { width: 520px; }  /* ✅ Recommendation */
-
-    .bpa-table th:nth-child(6),
-    .bpa-table td:nth-child(6) { width: 260px; }  /* AdditionalDetails */
-
-    /* ✅ Readability */
-    .bpa-table td {
-        padding: 6px;
-        vertical-align: top;
+    /* ✅ Make Description comfortable to read */
+    td.description-cell {
+        min-width: 400px;
         white-space: normal;
-        word-wrap: break-word;
-        line-height: 1.45;
+        word-break: break-word;
     }
 
-    .bpa-table td:nth-child(5) {
-        font-size: 0.95em;
-    }
-
-    .bpa-table td:nth-child(6) {
+    /* ✅ Keep AdditionalDetails compact */
+    td.details-cell {
+        max-width: 260px;
+        white-space: normal;
+        word-break: break-word;
         font-size: 0.9em;
         color: #555;
     }
 </style>
 
-<h1>SQL Best Practices Assessment</h1>
+<script>
+const CACHE_KEY = "bpa_latest_cache_v1";
+const CACHE_TTL_MINUTES = 15;
 
-<p><b>Status:</b> @Model.Status</p>
-
-@if (!string.IsNullOrWhiteSpace(Model.Error))
-{
-    <h3>Error</h3>
-    <pre>@Model.Error</pre>
+let allData = [];
+function severityBadge(sev) {
+    if (sev === "High") return '<span class="badge bg-danger">High</span>';
+    if (sev === "Medium") return '<span class="badge bg-warning text-dark">Medium</span>';
+    if (sev === "Low") return '<span class="badge bg-success">Low</span>';
+    return escapeHtml(sev);
 }
-else if (!Model.Recommendations.Any())
-{
-    <p>No BPA recommendations were returned.</p>
+document.addEventListener("DOMContentLoaded", async () => {
+    const cached = getCache();
+    if (cached) {
+        allData = cached;
+        initializeFilters();
+        renderTable();
+    } else {
+        await loadData();
+    }
+
+    document.getElementById("serverFilter").addEventListener("change", renderTable);
+    document.getElementById("severityFilter").addEventListener("change", renderTable);
+});
+
+async function loadData() {
+    document.getElementById("loadingIndicator").style.display = "block";
+
+    const response = await fetch(`/api/bpa/recommendations?cb=${Date.now()}`, {
+        headers: { "Cache-Control": "no-store" }
+    });
+
+    allData = await response.json();
+
+    document.getElementById("loadingIndicator").style.display = "none";
+
+    setCache(allData);
+    initializeFilters();
+    renderTable();
 }
-else
-{
-    <p><b>Total findings:</b> @Model.Recommendations.Count</p>
 
-    <!-- ✅ Severity filter -->
-    <div style="margin-bottom:10px;">
-        <b>Severity:</b>
-        <a asp-page="./Index" asp-route-severity="All" asp-route-server="@Model.SelectedServer" style="@ActiveSeverity("All")">All</a> |
-        <a asp-page="./Index" asp-route-severity="High" asp-route-server="@Model.SelectedServer" style="@ActiveSeverity("High")">🔴 High</a> |
-        <a asp-page="./Index" asp-route-severity="Medium" asp-route-server="@Model.SelectedServer" style="@ActiveSeverity("Medium")">🟡 Medium</a> |
-        <a asp-page="./Index" asp-route-severity="Low" asp-route-server="@Model.SelectedServer" style="@ActiveSeverity("Low")">🔵 Low</a> |
-        <a asp-page="./Index" asp-route-severity="Information" asp-route-server="@Model.SelectedServer" style="@ActiveSeverity("Information")">🟢 Info</a>
-    </div>
+function initializeFilters() {
+    const serverSelect = document.getElementById("serverFilter");
+    serverSelect.innerHTML = '<option value="">All Servers</option>';
 
-    <!-- ✅ Server filter -->
-    <form method="get" style="margin-bottom:10px;">
-        <b>Server:</b>
-        <select name="server" onchange="this.form.submit()">
-            <option value="All" selected="@(Model.SelectedServer.Equals("All", StringComparison.OrdinalIgnoreCase))">All</option>
-            @foreach (var s in Model.Servers ?? Enumerable.Empty<string>())
-            {
-                <option value="@s" selected="@(s.Equals(Model.SelectedServer, StringComparison.OrdinalIgnoreCase))">@s</option>
-            }
-        </select>
-        <input type="hidden" name="severity" value="@Model.SelectedSeverity" />
-    </form>
+    [...new Set(allData.map(r => r.serverName))]
+        .sort()
+        .forEach(server => {
+            const opt = document.createElement("option");
+            opt.value = server;
+            opt.textContent = server;
+            serverSelect.appendChild(opt);
+        });
 
-    <!-- ✅ CSV Export -->
-    <p style="margin-bottom:10px;">
-        <a asp-page="./Index"
-           asp-page-handler="DownloadCsv"
-           asp-route-severity="@Model.SelectedSeverity"
-           asp-route-server="@Model.SelectedServer">
-            ⬇ Download CSV
-        </a>
-    </p>
-
-    <!-- ✅ Server Summary -->
-    <h3>Server Summary</h3>
-    <table border="1" cellpadding="6" cellspacing="0" style="margin-bottom:16px;">
-        <thead>
-            <tr>
-                <th>Server</th>
-                <th>Summary</th>
-            </tr>
-        </thead>
-        <tbody>
-        @foreach (var s in serverSummary)
-        {
-            <tr>
-                <td>
-                    <strong>
-                        <a asp-page="./Index"
-                           asp-route-server="@s.Server"
-                           asp-route-severity="@Model.SelectedSeverity"
-                           style="text-decoration:none;">
-                            @s.Server
-                        </a>
-                    </strong>
-                </td>
-                <td>
-                    @if (s.High > 0) { <span style="color:#d9534f;font-weight:bold;">🔴 @s.High High</span> }
-                    @if (s.Medium > 0) { <span style="margin-left:8px;color:#f0ad4e;">🟡 @s.Medium Medium</span> }
-                    @if (s.Low > 0) { <span style="margin-left:8px;color:#5bc0de;">🔵 @s.Low Low</span> }
-                    @if (s.Info > 0) { <span style="margin-left:8px;color:#5cb85c;">🟢 @s.Info Info</span> }
-                </td>
-            </tr>
-        }
-        </tbody>
-    </table>
-
-    <!-- ✅ Detail table -->
-    <div class="bpa-table-container">
-        <table class="bpa-table" border="1">
-            <thead>
-                <tr>
-                    <th>Time</th>
-                    <th>Server</th>
-                    <th>Severity</th>
-                    <th>Rule</th>
-                    <th>Recommendation</th>
-                    <th>AdditionalDetails</th>
-                </tr>
-            </thead>
-            <tbody>
-            @foreach (var r in Model.Recommendations)
-            {
-                var color = r.Severity switch
-                {
-                    "High" => "#d9534f",
-                    "Medium" => "#f0ad4e",
-                    "Low" => "#5bc0de",
-                    "Information" => "#5cb85c",
-                    _ => "#999999"
-                };
-
-                <tr>
-                    <td>@r.TimeGenerated</td>
-                    <td>@r.ServerName</td>
-                    <td>
-                        <span style="background-color:@color;color:white;padding:4px 8px;border-radius:4px;font-weight:bold;">
-                            @r.Severity
-                        </span>
-                    </td>
-                    <td>
-                        <strong>@r.RuleName</strong><br />
-                        <small>@r.RuleId</small>
-                    </td>
-
-                    <!-- ✅ Recommendation + Help link -->
-                    <td>
-                        @r.Message
-
-                        @if (!string.IsNullOrWhiteSpace(r.HelpLink))
-                        {
-                            <div style="margin-top:6px;">
-                                <a href="@r.HelpLink" target="_blank" rel="noopener noreferrer">
-                                    🔗 Learn more
-                                </a>
-                            </div>
-                        }
-                    </td>
-
-                    <!-- ✅ AdditionalDetails ONLY -->
-                    <td>@r.AdditionalDetails</td>
-                </tr>
-            }
-            </tbody>
-        </table>
-    </div>
+    document.getElementById("severityFilter").selectedIndex = -1;
 }
+
+function renderTable() {
+    document.getElementById("loadingIndicator").style.display = "none";
+    const tbody = document.querySelector("#bpaTable tbody");
+    tbody.innerHTML = "";
+
+    const server = document.getElementById("serverFilter").value;
+    const severitySelect = document.getElementById("severityFilter");
+    
+const selectedSeverities = Array.from(severitySelect.selectedOptions)
+    .map(o => o.value)
+    .filter(v => v); // removes "" from "All Severities"
+
+
+    const filtered = allData
+        .filter(r => !server || r.serverName === server)
+        .filter(r => selectedSeverities.length === 0 || selectedSeverities.includes(r.severity))
+        .sort((a, b) => severityRank(b.severity) - severityRank(a.severity));
+
+    for (const r of filtered) {
+        const row = document.createElement("tr");
+        row.innerHTML = `
+            <td>${escapeHtml(r.serverName)}</td>
+            <td>${r.lastRunDate ? new Date(r.lastRunDate).toLocaleString() : ""}</td>
+            <td>${escapeHtml(r.source)}</td>
+            <td>${severityBadge(r.severity)}</td>            
+            <td>${escapeHtml(r.ruleId)}</td>
+            <td>${escapeHtml(r.title)}</td>
+            <td class="description-cell">
+                ${escapeHtml(r.description)}
+                ${r.helpLink && r.helpLink.trim()
+                    ? ` <a href="${r.helpLink}" target="_blank" rel="noopener noreferrer">(Help)</a>`
+                    : ""}
+            </td>
+            <td class="details-cell">${escapeHtml(r.additionalDetails ?? "")}</td>
+        `;
+        tbody.appendChild(row);
+    }
+}
+
+function exportCsv() {
+    const headers = ["ServerName","Severity","RuleId","Title","Description","HelpLink","AdditionalDetails"];
+    const rows = allData.map(r => [
+        r.serverName, r.severity, r.ruleId, r.title,
+        r.description, r.helpLink ?? "", r.additionalDetails ?? ""
+    ]);
+
+    const csv = headers.join(",") + "\n" +
+        rows.map(r => r.map(v => `"${String(v).replace(/"/g,'""')}"`).join(",")).join("\n");
+
+    download("bpa_recommendations.csv", csv);
+}
+
+function download(filename, text) {
+    const blob = new Blob([text], { type: "text/csv;charset=utf-8;" });
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(blob);
+    link.download = filename;
+    link.click();
+}
+
+function severityRank(s) {
+    return s === "High" ? 3 : s === "Medium" ? 2 : s === "Low" ? 1 : 0;
+}
+
+function escapeHtml(v) {
+    return (v ?? "").toString().replace(/[&<>"']/g, c => ({
+        "&": "&amp;",
+        "<": "&lt;",
+        ">": "&gt;",
+        "\"": "&quot;",
+        "'": "&#39;"
+    }[c]));
+}
+
+function setCache(data) {
+    localStorage.setItem(CACHE_KEY, JSON.stringify({ timestamp: Date.now(), data }));
+}
+
+function getCache() {
+    const raw = localStorage.getItem(CACHE_KEY);
+    if (!raw) return null;
+
+    const parsed = JSON.parse(raw);
+    const ageMinutes = (Date.now() - parsed.timestamp) / 60000;
+    if (ageMinutes > CACHE_TTL_MINUTES) {
+        localStorage.removeItem(CACHE_KEY);
+        return null;
+    }
+    return parsed.data;
+}
+
+function clearCache() {
+    localStorage.removeItem(CACHE_KEY);
+    location.reload();
+}
+</script>

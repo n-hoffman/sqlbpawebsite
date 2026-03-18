@@ -1,9 +1,4 @@
-using System;
-using System.Collections.Generic;
-using System.Linq;
 using System.Text;
-using System.Threading.Tasks;
-using Azure;
 using Azure.Identity;
 using Azure.Monitor.Query;
 using Azure.Monitor.Query.Models;
@@ -21,35 +16,44 @@ public class IndexModel : PageModel
     public List<BpaRecommendation> Recommendations { get; private set; } = new();
     public List<string> Servers { get; private set; } = new();
 
-    public string SelectedSeverity { get; private set; } = "All";
+    // Filters
+    public List<string> SourceTypes { get; } = new() { "All", "Arc", "AzureVM" };
+    public string SelectedSourceType { get; private set; } = "All";
     public string SelectedServer { get; private set; } = "All";
 
+    // ✅ Multi-select severity
+    public List<string> SelectedSeverities { get; private set; } = new();
+
     private const int LatestRunWindowMinutes = 10;
+
+    private const string PrimaryWorkspaceId = "ee45cdde-1cf1-4bb9-aabd-ff94e9e15e91";
+    private const string SecondWorkspaceId  = "c35180b0-3a49-406b-b1f0-fd874bd61dd2";
 
     public async Task OnGetAsync()
     {
         await LoadDataAsync();
     }
 
-    // ✅ CSV EXPORT (INCLUDES ADDITIONALDETAILS)
     public async Task<IActionResult> OnGetDownloadCsvAsync()
     {
         await LoadDataAsync();
 
         var sb = new StringBuilder();
-        sb.AppendLine("TimeGenerated,Server,Severity,RuleId,RuleName,Message,HelpLink,AdditionalDetails");
+        sb.AppendLine("TimeGenerated,Server,SourceType,Severity,RuleId,RuleName,Message,HelpLink,AdditionalDetails,ResourceId");
 
         foreach (var r in Recommendations)
         {
             sb.AppendLine(string.Join(",",
                 Csv(r.TimeGenerated.ToString("o")),
                 Csv(r.ServerName),
+                Csv(r.SourceType),
                 Csv(r.Severity),
                 Csv(r.RuleId),
                 Csv(r.RuleName),
                 Csv(r.Message),
                 Csv(r.HelpLink),
-                Csv(r.AdditionalDetails)
+                Csv(r.AdditionalDetails),
+                Csv(r.ResourceId)
             ));
         }
 
@@ -64,62 +68,72 @@ public class IndexModel : PageModel
     {
         try
         {
-            SelectedSeverity = Request.Query["severity"].FirstOrDefault() ?? "All";
-            SelectedServer = Request.Query["server"].FirstOrDefault() ?? "All";
+            SelectedSourceType = Request.Query["source"].FirstOrDefault() ?? "All";
+            SelectedServer     = Request.Query["server"].FirstOrDefault() ?? "All";
 
-            string workspaceId = "ee45cdde-1cf1-4bb9-aabd-ff94e9e15e91";
+            // ✅ FIX: normalize nullable → non-null
+            SelectedSeverities = Request.Query["severity"]
+                .Where(s => !string.IsNullOrWhiteSpace(s))
+                .Select(s => s!)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
             var client = new LogsQueryClient(new DefaultAzureCredential());
+            var response = await client.QueryWorkspaceAsync(
+                PrimaryWorkspaceId,
+                BuildKqlQuery(),
+                QueryTimeRange.All);
 
-            string query = @"
-SqlAssessment_CL
-| where TimeGenerated > ago(90d)
-| order by TimeGenerated desc
-| take 5000
-";
-
-            var response = await client.QueryWorkspaceAsync(workspaceId, query, QueryTimeRange.All);
             var table = response.Value.Table;
-
             var all = new List<BpaRecommendation>();
+            int skipped = 0;
 
             foreach (var row in table.Rows)
             {
-                var raw = row["RawData"]?.ToString();
-                if (string.IsNullOrWhiteSpace(raw))
-                    continue;
+                try
+                {
+                    var raw = row["RawData"]?.ToString();
+                    if (string.IsNullOrWhiteSpace(raw))
+                        continue;
 
-                var time = ((DateTimeOffset)row["TimeGenerated"]).UtcDateTime;
-                all.Add(ParseRawData(raw, time));
+                    var time = ((DateTimeOffset)row["TimeGenerated"]).UtcDateTime;
+                    var resourceId = row["ResourceId"]?.ToString() ?? "";
+
+                    var rec = ParseRawData(raw, time, resourceId);
+                    if (!string.IsNullOrWhiteSpace(rec.ServerName))
+                        all.Add(rec);
+                }
+                catch
+                {
+                    skipped++;
+                }
             }
 
-            var latestRunPerServer = all
-                .GroupBy(r => r.ServerName)
-                .ToDictionary(
-                    g => g.Key,
-                    g => g.Max(r => r.TimeGenerated)
-                );
-
-            all = all
-                .Where(r =>
-                    latestRunPerServer.TryGetValue(r.ServerName, out var latest) &&
-                    r.TimeGenerated >= latest.AddMinutes(-LatestRunWindowMinutes))
+            Servers = all
+                .Select(r => r.ServerName)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(s => s)
                 .ToList();
 
-            Servers = all.Select(r => r.ServerName).Distinct().OrderBy(s => s).ToList();
-
-            if (SelectedSeverity != "All")
-                all = all.Where(r => r.Severity == SelectedSeverity).ToList();
+            if (SelectedSourceType != "All")
+                all = all.Where(r => r.SourceType == SelectedSourceType).ToList();
 
             if (SelectedServer != "All")
                 all = all.Where(r => r.ServerName == SelectedServer).ToList();
 
+            if (SelectedSeverities.Any())
+                all = all.Where(r => SelectedSeverities.Contains(r.Severity)).ToList();
+
             Recommendations = all
                 .OrderBy(r => SeverityRank(r.Severity))
+                .ThenBy(r => r.SourceType)
                 .ThenBy(r => r.ServerName)
                 .ThenBy(r => r.RuleName)
                 .ToList();
 
-            Status = $"Query completed. Latest run window ending at {Recommendations.Max(r => r.TimeGenerated):u}. Rows returned: {Recommendations.Count}";
+            Status = Recommendations.Any()
+                ? $"Query completed (2 workspaces union). Latest run window ending at {Recommendations.Max(r => r.TimeGenerated):u}. Rows returned: {Recommendations.Count}. Skipped rows: {skipped}."
+                : $"Query completed. Rows returned: 0. Skipped rows: {skipped}.";
         }
         catch (Exception ex)
         {
@@ -127,71 +141,81 @@ SqlAssessment_CL
         }
     }
 
-    private static BpaRecommendation ParseRawData(string raw, DateTime timeGenerated)
+    private static string BuildKqlQuery() => $@"
+let base =
+    union isfuzzy=true
+        (SqlAssessment_CL),
+        (workspace(""{SecondWorkspaceId}"").SqlAssessment_CL)
+    | where TimeGenerated > ago(90d)
+    | extend ResId = tostring(column_ifexists(""ResourceId"", column_ifexists(""_ResourceId"", """")))
+    | project TimeGenerated, RawData, ResourceId=ResId;
+
+let latestPerResource =
+    base
+    | summarize Latest=max(TimeGenerated) by ResourceId;
+
+base
+| lookup latestPerResource on ResourceId
+| where TimeGenerated >= Latest - {LatestRunWindowMinutes}m
+| project TimeGenerated, RawData, ResourceId
+| order by TimeGenerated desc
+";
+
+    private static BpaRecommendation ParseRawData(string raw, DateTime timeGenerated, string resourceId)
     {
         var fields = ParseCsvLine(raw);
 
-        string ruleId = fields.ElementAtOrDefault(2) ?? "";
+        string ruleId   = fields.ElementAtOrDefault(2) ?? "";
         string ruleName = fields.ElementAtOrDefault(3) ?? "";
-        string message = fields.ElementAtOrDefault(4) ?? "";
+        string message  = fields.ElementAtOrDefault(4) ?? "";
 
-        string serverField = fields.ElementAtOrDefault(7) ?? "";
-        string serverName = NormalizeServerName(serverField.Split(':')[0]);
-
+        string server = NormalizeServerName(GetLastIdSegment(resourceId));
         string severity = MapSeverity(fields.ElementAtOrDefault(8) ?? "");
 
-        // ✅ HelpLink (URL-based detection)
         string helpLink = fields.FirstOrDefault(f =>
             f.StartsWith("http://", StringComparison.OrdinalIgnoreCase) ||
-            f.StartsWith("https://", StringComparison.OrdinalIgnoreCase)
-        ) ?? "";
+            f.StartsWith("https://", StringComparison.OrdinalIgnoreCase)) ?? "";
 
-        // ✅ ADDITIONAL DETAILS (schema-agnostic)
-        // Anything beyond the known fields that is NOT a URL is treated as detail
-        var additionalParts = fields
+        var details = fields
             .Skip(9)
-            .Where(f =>
-                !string.IsNullOrWhiteSpace(f) &&
-                !f.StartsWith("http://", StringComparison.OrdinalIgnoreCase) &&
-                !f.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
-            .Select(f => f.Trim())
+            .Where(f => !string.IsNullOrWhiteSpace(f) && !f.StartsWith("http"))
             .Distinct()
             .ToList();
-
-        string additionalDetails = string.Join(" | ", additionalParts);
 
         return new BpaRecommendation
         {
             TimeGenerated = timeGenerated,
+            ServerName = server,
+            ResourceId = resourceId,
+            SourceType = DetectSourceType(resourceId),
+            Severity = severity,
             RuleId = ruleId,
             RuleName = ruleName,
             Message = message,
-            ServerName = serverName,
-            Severity = severity,
             HelpLink = helpLink,
-            AdditionalDetails = additionalDetails
+            AdditionalDetails = string.Join(" | ", details)
         };
     }
 
-    private static string NormalizeServerName(string s)
-    {
-        s = s.Trim().Trim('"').ToLowerInvariant();
-        var dot = s.IndexOf('.');
-        return dot > 0 ? s[..dot] : s;
-    }
+    private static string DetectSourceType(string id) =>
+        id.Contains("/microsoft.hybridcompute/", StringComparison.OrdinalIgnoreCase) ? "Arc" :
+        id.Contains("/microsoft.compute/virtualmachines/", StringComparison.OrdinalIgnoreCase) ? "AzureVM" :
+        "Unknown";
 
-    private static string MapSeverity(string raw)
-    {
-        return int.TryParse(raw.Trim('"'), out int sev)
-            ? sev switch
-            {
-                30 => "High",
-                20 => "Medium",
-                10 => "Low",
-                _ => "Information"
-            }
-            : "Information";
-    }
+    private static string GetLastIdSegment(string id) =>
+        id.Split('/', StringSplitOptions.RemoveEmptyEntries).LastOrDefault() ?? "";
+
+    private static string NormalizeServerName(string s) =>
+        s.Split('.', StringSplitOptions.RemoveEmptyEntries)[0].ToLowerInvariant();
+
+    private static string MapSeverity(string raw) =>
+        int.TryParse(raw.Trim('"'), out var sev) ? sev switch
+        {
+            30 => "High",
+            20 => "Medium",
+            10 => "Low",
+            _  => "Information"
+        } : "Information";
 
     private static int SeverityRank(string s) => s switch
     {
@@ -209,15 +233,13 @@ SqlAssessment_CL
 
         foreach (char c in line)
         {
-            if (c == '"')
-                inQuotes = !inQuotes;
+            if (c == '"') inQuotes = !inQuotes;
             else if (c == ',' && !inQuotes)
             {
                 result.Add(current.ToString());
                 current.Clear();
             }
-            else
-                current.Append(c);
+            else current.Append(c);
         }
 
         result.Add(current.ToString());
@@ -228,8 +250,6 @@ SqlAssessment_CL
     {
         s ??= "";
         s = s.Replace("\"", "\"\"");
-        return s.Contains(',') || s.Contains('|')
-            ? $"\"{s}\""
-            : s;
+        return s.Contains(',') || s.Contains('\n') ? $"\"{s}\"" : s;
     }
 }
