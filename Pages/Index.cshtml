@@ -9,6 +9,10 @@
     Loading BPA results…
 </div>
 
+<div id="errorBanner" class="alert alert-danger d-none" role="alert">
+    <strong>Error:</strong> <span id="errorMessage"></span>
+</div>
+
 <div class="row mb-3">
     <div class="col-md-4">
         <label class="form-label">Server</label>
@@ -55,14 +59,12 @@
 </div>
 
 <style>
-    /* ✅ Make Description comfortable to read */
     td.description-cell {
         min-width: 400px;
         white-space: normal;
         word-break: break-word;
     }
 
-    /* ✅ Keep AdditionalDetails compact */
     td.details-cell {
         max-width: 260px;
         white-space: normal;
@@ -99,18 +101,29 @@ document.addEventListener("DOMContentLoaded", async () => {
 
 async function loadData() {
     document.getElementById("loadingIndicator").style.display = "block";
+    document.getElementById("errorBanner").classList.add("d-none");
 
-    const response = await fetch(`/api/bpa/recommendations?cb=${Date.now()}`, {
-        headers: { "Cache-Control": "no-store" }
-    });
+    try {
+        const response = await fetch(`/api/bpa/recommendations?cb=${Date.now()}`, {
+            headers: { "Cache-Control": "no-store" }
+        });
 
-    allData = await response.json();
+        if (!response.ok) {
+            const text = await response.text();
+            throw new Error(`${response.status} ${response.statusText}: ${text}`);
+        }
 
-    document.getElementById("loadingIndicator").style.display = "none";
+        allData = await response.json();
 
-    setCache(allData);
-    initializeFilters();
-    renderTable();
+        setCache(allData);
+        initializeFilters();
+        renderTable();
+    } catch (err) {
+        document.getElementById("errorMessage").textContent = err.message;
+        document.getElementById("errorBanner").classList.remove("d-none");
+    } finally {
+        document.getElementById("loadingIndicator").style.display = "none";
+    }
 }
 
 function initializeFilters() {
@@ -139,7 +152,7 @@ function renderTable() {
     
 const selectedSeverities = Array.from(severitySelect.selectedOptions)
     .map(o => o.value)
-    .filter(v => v); // removes "" from "All Severities"
+    .filter(v => v);
 
 
     const filtered = allData
