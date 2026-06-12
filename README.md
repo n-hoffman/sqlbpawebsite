@@ -1,5 +1,13 @@
-Best Practices Assessment Aggregator
+# SQL Best Practice Assessment Aggregator
 
-This web application aggregates Best Practices Assessment results across SQL Servers that are either Azure Arc-enabled or running directly in Azure. It pulls data from Log Analytics using the managed identity of the web app. This site is built in .Net and meant to be hosted an Azure App Service running Linux.
+A .NET 10 web app that aggregates SQL Server BPA results across Azure Arc-enabled and Azure VM SQL Servers. Pulls data from two Log Analytics workspaces using the App Service's managed identity.
 
-Note: This is a demo environment and not intended for production use. There are no sensitive credentials stored in the code.
+## Deployment
+
+Prerequisites
+Azure App Service (Linux, .NET 10) with system-assigned managed identity
+Two Log Analytics workspaces with SqlAssessment_CL data
+Log Analytics Reader role for the MI on each workspace
+
+Disclaimer
+Demo environment — not intended for production use.
