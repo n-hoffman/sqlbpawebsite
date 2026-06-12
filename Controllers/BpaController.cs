@@ -39,7 +39,7 @@ public class BpaController : ControllerBase
         if (workspaces.Count == 0)
             return Ok(new List<BpaUnifiedRow>());
 
-        // KQL mirrors your prior working IndexModel logic [1](https://microsoft-my.sharepoint.com/personal/nhoffman_microsoft_com/Documents/Microsoft%20Copilot%20Chat%20Files/Index.cshtml.cs?web=1)
+        // KQL mirrors your prior working IndexModel logic
         var query = $@"
 SqlAssessment_CL
 | where TimeGenerated > ago({settings.LookbackDays}d)
@@ -56,7 +56,7 @@ SqlAssessment_CL
         // Flatten all rows across both workspaces
         var all = resultsByWorkspace.SelectMany(x => x).ToList();
 
-        // Latest-run-per-server window logic exactly like your prior page model [1](https://microsoft-my.sharepoint.com/personal/nhoffman_microsoft_com/Documents/Microsoft%20Copilot%20Chat%20Files/Index.cshtml.cs?web=1)
+        // Latest-run-per-server window logic exactly like your prior page model
         // ✅ Build unified results per-server so lastRunDate is always valid
         var unified = all
             .GroupBy(r => r.ServerName)
@@ -114,7 +114,7 @@ SqlAssessment_CL
         return output;
     }
 
-    // ===== Parsing logic reused from your prior [Index.cshtml.cs](https://microsoft-my.sharepoint.com/personal/nhoffman_microsoft_com/Documents/Microsoft%20Copilot%20Chat%20Files/Index.cshtml.cs?EntityRepresentationId=107c19db-7a7e-4df7-bbc0-4e5ff1fe14e1) [1](https://microsoft-my.sharepoint.com/personal/nhoffman_microsoft_com/Documents/Microsoft%20Copilot%20Chat%20Files/Index.cshtml.cs?web=1)
+    // ===== Parsing logic reused from your prior
 
     private static BpaParsedRow ParseRawData(string raw, DateTime timeGenerated)
     {
@@ -124,19 +124,19 @@ SqlAssessment_CL
         string ruleName = fields.ElementAtOrDefault(3) ?? "";
         string message = fields.ElementAtOrDefault(4) ?? "";
 
-        // Server field / normalization pattern same as prior logic [1](https://microsoft-my.sharepoint.com/personal/nhoffman_microsoft_com/Documents/Microsoft%20Copilot%20Chat%20Files/Index.cshtml.cs?web=1)
+        // Server field / normalization pattern same as prior logic
         string serverField = fields.ElementAtOrDefault(7) ?? "";
         string serverName = NormalizeServerName(serverField.Split(':')[0]);
 
         string severity = MapSeverity(fields.ElementAtOrDefault(8) ?? "");
 
-        // HelpLink detection (first URL field) [1](https://microsoft-my.sharepoint.com/personal/nhoffman_microsoft_com/Documents/Microsoft%20Copilot%20Chat%20Files/Index.cshtml.cs?web=1)
+        // HelpLink detection (first URL field)
         string helpLink = fields.FirstOrDefault(f =>
             f.StartsWith("http://", StringComparison.OrdinalIgnoreCase) ||
             f.StartsWith("https://", StringComparison.OrdinalIgnoreCase)
         ) ?? "";
 
-        // AdditionalDetails: schema-agnostic extras past known fields excluding URLs [1](https://microsoft-my.sharepoint.com/personal/nhoffman_microsoft_com/Documents/Microsoft%20Copilot%20Chat%20Files/Index.cshtml.cs?web=1)
+        // AdditionalDetails: schema-agnostic extras past known fields excluding URLs
         var additionalParts = fields
             .Skip(9)
             .Where(f =>
@@ -270,3 +270,4 @@ SqlAssessment_CL
         public string source { get; set; } = ""; // "ArcSQL" / "AzureVM"
     }
 }
+
