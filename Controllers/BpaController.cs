@@ -91,24 +91,40 @@ SqlAssessment_CL
         return Ok(unified);
     }
 
+    [HttpPost("clearcache")]
+    public IActionResult ClearCache()
+    {
+        _cache.Remove("bpa:recommendations:all");
+        return Ok(new { cleared = true });
+    }
+
     private async Task<List<BpaParsedRow>> QueryWorkspace(LogsQueryClient client, WorkspaceCfg ws, string query)
     {
         var output = new List<BpaParsedRow>();
 
-        var response = await client.QueryWorkspaceAsync(ws.WorkspaceId, query, QueryTimeRange.All);
-        var table = response.Value.Table;
-
-        foreach (var row in table.Rows)
+        try
         {
-            var raw = row["RawData"]?.ToString();
-            if (string.IsNullOrWhiteSpace(raw))
-                continue;
+            var response = await client.QueryWorkspaceAsync(ws.WorkspaceId, query, QueryTimeRange.All);
+            var table = response.Value.Table;
 
-            var time = ((DateTimeOffset)row["TimeGenerated"]).UtcDateTime;
+            foreach (var row in table.Rows)
+            {
+                var raw = row["RawData"]?.ToString();
+                if (string.IsNullOrWhiteSpace(raw))
+                    continue;
 
-            var parsed = ParseRawData(raw, time);
-            parsed.Source = ws.Name; // label it by workspace entry
-            output.Add(parsed);
+                var time = ((DateTimeOffset)row["TimeGenerated"]).UtcDateTime;
+
+                var parsed = ParseRawData(raw, time);
+                parsed.Source = ws.Name; // label it by workspace entry
+                output.Add(parsed);
+            }
+        }
+        catch (Exception ex)
+        {
+            // Log the error but don't let one workspace failure take down the entire endpoint.
+            // Results from other workspaces will still be returned.
+            Console.Error.WriteLine($"[BPA] Failed to query workspace '{ws.Name}' ({ws.WorkspaceId}): {ex.Message}");
         }
 
         return output;
@@ -270,4 +286,3 @@ SqlAssessment_CL
         public string source { get; set; } = ""; // "ArcSQL" / "AzureVM"
     }
 }
-
