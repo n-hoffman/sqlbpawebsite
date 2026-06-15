@@ -23,15 +23,12 @@ public class BpaController : ControllerBase
     [HttpGet("recommendations")]
     public async Task<IActionResult> GetRecommendations()
     {
-        // Server-side cache so we don't hammer LA on refresh / demo clicks
-        // (client-side cache already exists; this is a safety net)
         var cacheKey = "bpa:recommendations:all";
         if (_cache.TryGetValue(cacheKey, out List<BpaUnifiedRow>? cached) && cached is not null)
             return Ok(cached);
 
         var settings = LoadSettings();
 
-        // Pull workspace list
         var workspaces = settings.Workspaces
             .Where(w => !string.IsNullOrWhiteSpace(w.WorkspaceId))
             .ToList();
@@ -39,7 +36,6 @@ public class BpaController : ControllerBase
         if (workspaces.Count == 0)
             return Ok(new List<BpaUnifiedRow>());
 
-        // KQL mirrors your prior working IndexModel logic
         var query = $@"
 SqlAssessment_CL
 | where TimeGenerated > ago({settings.LookbackDays}d)
@@ -49,28 +45,22 @@ SqlAssessment_CL
 
         var client = new LogsQueryClient(new DefaultAzureCredential());
 
-        // Query both workspaces concurrently
         var tasks = workspaces.Select(w => QueryWorkspace(client, w, query)).ToArray();
         var resultsByWorkspace = await Task.WhenAll(tasks);
 
-        // Flatten all rows across both workspaces
         var all = resultsByWorkspace.SelectMany(x => x).ToList();
 
-        // Latest-run-per-server window logic exactly like your prior page model
-        // ✅ Build unified results per-server so lastRunDate is always valid
         var unified = all
             .GroupBy(r => r.ServerName)
             .SelectMany(g =>
             {
-                // One canonical "last BPA run" timestamp per server
                 var lastRun = g.Max(r => r.TimeGenerated);
 
-                // Apply your same "latest run window" filter per server
                 return g
                     .Where(r => r.TimeGenerated >= lastRun.AddMinutes(-settings.LatestRunWindowMinutes))
                     .Select(r => new BpaUnifiedRow
                     {
-                        lastRunDate = lastRun,          // ✅ ALWAYS valid (no Invalid Date)
+                        lastRunDate = lastRun,
                         serverName = r.ServerName,
                         severity = r.Severity,
                         ruleId = r.RuleId,
@@ -85,7 +75,7 @@ SqlAssessment_CL
             .ThenBy(r => r.serverName)
             .ThenBy(r => r.ruleId)
             .ToList();
-        // Cache it briefly
+
         _cache.Set(cacheKey, unified, TimeSpan.FromMinutes(5));
 
         return Ok(unified);
@@ -102,35 +92,24 @@ SqlAssessment_CL
     {
         var output = new List<BpaParsedRow>();
 
-        try
+        var response = await client.QueryWorkspaceAsync(ws.WorkspaceId, query, QueryTimeRange.All);
+        var table = response.Value.Table;
+
+        foreach (var row in table.Rows)
         {
-            var response = await client.QueryWorkspaceAsync(ws.WorkspaceId, query, QueryTimeRange.All);
-            var table = response.Value.Table;
+            var raw = row["RawData"]?.ToString();
+            if (string.IsNullOrWhiteSpace(raw))
+                continue;
 
-            foreach (var row in table.Rows)
-            {
-                var raw = row["RawData"]?.ToString();
-                if (string.IsNullOrWhiteSpace(raw))
-                    continue;
+            var time = ((DateTimeOffset)row["TimeGenerated"]).UtcDateTime;
 
-                var time = ((DateTimeOffset)row["TimeGenerated"]).UtcDateTime;
-
-                var parsed = ParseRawData(raw, time);
-                parsed.Source = ws.Name; // label it by workspace entry
-                output.Add(parsed);
-            }
-        }
-        catch (Exception ex)
-        {
-            // Log the error but don't let one workspace failure take down the entire endpoint.
-            // Results from other workspaces will still be returned.
-            Console.Error.WriteLine($"[BPA] Failed to query workspace '{ws.Name}' ({ws.WorkspaceId}): {ex.Message}");
+            var parsed = ParseRawData(raw, time);
+            parsed.Source = ws.Name;
+            output.Add(parsed);
         }
 
         return output;
     }
-
-    // ===== Parsing logic reused from your prior
 
     private static BpaParsedRow ParseRawData(string raw, DateTime timeGenerated)
     {
@@ -140,19 +119,16 @@ SqlAssessment_CL
         string ruleName = fields.ElementAtOrDefault(3) ?? "";
         string message = fields.ElementAtOrDefault(4) ?? "";
 
-        // Server field / normalization pattern same as prior logic
         string serverField = fields.ElementAtOrDefault(7) ?? "";
         string serverName = NormalizeServerName(serverField.Split(':')[0]);
 
         string severity = MapSeverity(fields.ElementAtOrDefault(8) ?? "");
 
-        // HelpLink detection (first URL field)
         string helpLink = fields.FirstOrDefault(f =>
             f.StartsWith("http://", StringComparison.OrdinalIgnoreCase) ||
             f.StartsWith("https://", StringComparison.OrdinalIgnoreCase)
         ) ?? "";
 
-        // AdditionalDetails: schema-agnostic extras past known fields excluding URLs
         var additionalParts = fields
             .Skip(9)
             .Where(f =>
@@ -229,14 +205,11 @@ SqlAssessment_CL
         return result;
     }
 
-    // ===== Config models
-
     private BpaSettings LoadSettings()
     {
         var s = new BpaSettings();
         _config.GetSection("Bpa").Bind(s);
 
-        // sane defaults if not present
         if (s.LatestRunWindowMinutes <= 0) s.LatestRunWindowMinutes = 10;
         if (s.LookbackDays <= 0) s.LookbackDays = 90;
         if (s.Take <= 0) s.Take = 5000;
@@ -268,10 +241,9 @@ SqlAssessment_CL
         public string Message { get; set; } = "";
         public string HelpLink { get; set; } = "";
         public string AdditionalDetails { get; set; } = "";
-        public string Source { get; set; } = ""; // workspace label
+        public string Source { get; set; } = "";
     }
 
-    // This matches your UI field names exactly (+ optional "source")
     public class BpaUnifiedRow
     {
         public DateTime lastRunDate { get; set; }
@@ -283,6 +255,6 @@ SqlAssessment_CL
         public string description { get; set; } = "";
         public string helpLink { get; set; } = "";
         public string additionalDetails { get; set; } = "";
-        public string source { get; set; } = ""; // "ArcSQL" / "AzureVM"
+        public string source { get; set; } = "";
     }
 }
