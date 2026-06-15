@@ -25,6 +25,13 @@ app.UseHttpsRedirection();
 app.UseStaticFiles();
 app.UseRouting();
 
+// Prevent browsers from caching dynamic pages (LAW query results must always be fresh)
+app.Use(async (context, next) =>
+{
+    context.Response.Headers["Cache-Control"] = "no-store";
+    await next();
+});
+
 app.UseAuthorization();
 
 app.MapControllers();
